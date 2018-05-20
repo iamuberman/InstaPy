@@ -255,9 +255,9 @@ def get_links_for_tag(browser,
                 nap = 1.5
     except:
         raise
-
+    
     sleep(4)
-
+    
     return links[:amount]
 
 
@@ -282,10 +282,24 @@ def get_links_for_username(browser,
 
     logger.info('Getting {} image list...'.format(username))
 
-    # Get  user profile page
-    browser.get('https://www.instagram.com/' + username)
-    # update server calls
-    update_activity()
+    user_link = "https://www.instagram.com/{}/".format(username)
+    sleep(1)
+    #Check URL of the webpage, if it already is user's profile page, then do not navigate to it again
+    try:
+        current_url = browser.current_url
+    except WebDriverException:
+        try:
+            current_url = browser.execute_script("return window.location.href")
+        except WebDriverException:
+            raise
+            current_url = None
+    
+    if current_url is None or current_url != user_link:
+        browser.get(user_link)
+        # update server calls
+        update_activity()
+        sleep(1)
+
 
     body_elem = browser.find_element_by_tag_name('body')
 
@@ -347,7 +361,7 @@ def get_links_for_username(browser,
             filtered_links = len(links)
 
     except BaseException as e:
-        logger.error("link_elems error {}}".format(str(e)))
+        logger.error("link_elems error {}".format(str(e)))
 
     if randomize:
         # Expanding the pooulation for better random distribution
@@ -395,8 +409,7 @@ def get_links_for_username(browser,
     return links[:amount]
 
 
-def check_link(browser, link, dont_like, ignore_if_contains, ignore_users, username,
-               potency_ratio, delimit_by_numbers, max_followers, max_following, min_followers, min_following, logger):
+def check_link(browser, post_link, dont_like, ignore_if_contains, username, logger):
     """
     Check the given link if it is appropriate
 
@@ -404,26 +417,31 @@ def check_link(browser, link, dont_like, ignore_if_contains, ignore_users, usern
     :param link:
     :param dont_like: hashtags of inappropriate phrases
     :param ignore_if_contains:
-    :param ignore_users:
     :param username:
-    :param potency_ratio:
-    :param delimit_by_numbers: pre-defined precise relationship bounds
-    :param max_followers:
-    :param max_following:
-    :param min_followers:
-    :param min_following:
     :param logger: the logger instance
     :return: tuple of
         boolean: True if inappropriate,
         string: the username,
         boolean: True if it is video media,
-        string: the message if inappropriate else 'None'
+        string: the message if inappropriate else 'None',
+        string: set the scope of the return value
     """
-    browser.get(link)
-    # update server calls
-    update_activity()
-    sleep(2)
-
+    #Check URL of the webpage, if it already is post's page, then do not navigate to it again
+    try:
+        current_url = browser.current_url
+    except WebDriverException:
+        try:
+            current_url = browser.execute_script("return window.location.href")
+        except WebDriverException:
+            raise
+            current_url = None
+    
+    if current_url is None or current_url != post_link:
+        browser.get(post_link)
+        # update server calls
+        update_activity()
+        sleep(2)
+        
     """Check if the Post is Valid/Exists"""
     try:
         post_page = browser.execute_script(
@@ -437,19 +455,19 @@ def check_link(browser, link, dont_like, ignore_if_contains, ignore_users, usern
             post_page = None
 
     if post_page is None:
-        logger.warning('Unavailable Page: {}'.format(link.encode('utf-8')))
-        return True, None, None, 'Unavailable Page'
+        logger.warning('Unavailable Page: {}'.format(post_link.encode('utf-8')))
+        return True, None, None, 'Unavailable Page', "Failure"
 
-    """Gets the description of the link and checks for the dont_like tags"""
-    graphql = 'graphql' in post_page
+    """Gets the description of the post's link and checks for the dont_like tags"""
+    graphql = 'graphql' in post_page[0]
     if graphql:
-        media = post_page['graphql']['shortcode_media']
+        media = post_page[0]['graphql']['shortcode_media']
         is_video = media['is_video']
         user_name = media['owner']['username']
         image_text = media['edge_media_to_caption']['edges']
         image_text = image_text[0]['node']['text'] if image_text else None
         owner_comments = browser.execute_script('''
-      latest_comments = window._sharedData.entry_data.PostPage.graphql.shortcode_media.edge_media_to_comment.edges;
+      latest_comments = window._sharedData.entry_data.PostPage[0].graphql.shortcode_media.edge_media_to_comment.edges;
       if (latest_comments === undefined) latest_comments = Array();
       owner_comments = latest_comments
         .filter(item => item.node.owner.username == '{}')
@@ -458,12 +476,12 @@ def check_link(browser, link, dont_like, ignore_if_contains, ignore_users, usern
       return owner_comments;
     '''.format(user_name))
     else:
-        media = post_page['media']
+        media = post_page[0]['media']
         is_video = media['is_video']
         user_name = media['owner']['username']
         image_text = media['caption']
         owner_comments = browser.execute_script('''
-      latest_comments = window._sharedData.entry_data.PostPage.media.comments.nodes;
+      latest_comments = window._sharedData.entry_data.PostPage[0].media.comments.nodes;
       if (latest_comments === undefined) latest_comments = Array();
       owner_comments = latest_comments
         .filter(item => item.user.username == '{}')
@@ -493,128 +511,11 @@ def check_link(browser, link, dont_like, ignore_if_contains, ignore_users, usern
         image_text = "No description"
 
     logger.info('Image from: {}'.format(user_name.encode('utf-8')))
-
-
-    """Checks the potential of target user by relationship status in order to delimit actions within the desired boundary"""
-    if potency_ratio or delimit_by_numbers and (max_followers or max_following or min_followers or min_following):
-
-        userlink = 'https://www.instagram.com/' + user_name
-        browser.get(userlink)
-
-        # update server calls
-        update_activity()
-        sleep(1)
-
-        relationship_ratio = None
-        reverse_relationship = False
-
-        try:
-            followers_count = format_number(browser.find_element_by_xpath("//a[contains"
-                                    "(@href,'followers')]/span").text)
-        except NoSuchElementException:
-            try:
-                followers_count = browser.execute_script(
-                    "return window._sharedData.entry_data."
-                    "ProfilePage.graphql.user.edge_followed_by.count")
-            except WebDriverException:
-                try:
-                    browser.execute_script("location.reload()")
-                    followers_count = browser.execute_script(
-                        "return window._sharedData.entry_data."
-                        "ProfilePage.graphql.user.edge_followed_by.count")
-                except WebDriverException:
-                    try:
-                        followers_count = format_number(browser.find_element_by_xpath(
-                                        "//li[2]/a/span[contains(@class, '_fd86t')]").text)
-                    except NoSuchElementException:
-                        logger.info("Error occured during getting the followers count of '{}'\n".format(user_name))
-                        followers_count = None
-
-        try:
-            following_count = format_number(browser.find_element_by_xpath("//a[contains"
-                                    "(@href,'following')]/span").text)
-        except NoSuchElementException:
-            try:
-                following_count = browser.execute_script(
-                    "return window._sharedData.entry_data."
-                    "ProfilePage.graphql.user.edge_follow.count")
-            except WebDriverException:
-                try:
-                    browser.execute_script("location.reload()")
-                    following_count = browser.execute_script(
-                        "return window._sharedData.entry_data."
-                        "ProfilePage.graphql.user.edge_follow.count")
-                except WebDriverException:
-                    try:
-                        following_count = format_number(browser.find_element_by_xpath(
-                                            "//li[3]/a/span[contains(@class, '_fd86t')]").text)
-                    except NoSuchElementException:
-                        logger.info("\nError occured during getting the following count of '{}'\n".format(user_name))
-                        following_count = None
-
-        browser.get(link)
-        # update server calls
-        update_activity()
-        sleep(1)
-
-        if potency_ratio and potency_ratio < 0:
-            potency_ratio *= -1
-            reverse_relationship = True
-
-        if followers_count and following_count:
-            relationship_ratio = (followers_count/following_count
-                                   if not reverse_relationship
-                                    else following_count/followers_count)
-
-        logger.info('User: {} >> followers: {}  |  following: {}  |  relationship ratio: {}'.format(user_name,
-        followers_count if followers_count else 'unknown',
-        following_count if following_count else 'unknown',
-        float("{0:.2f}".format(relationship_ratio)) if relationship_ratio else 'unknown'))
-
-        if followers_count  or following_count:
-            if potency_ratio and not delimit_by_numbers:
-                if relationship_ratio and relationship_ratio < potency_ratio:
-                        return True, user_name, is_video, \
-                            "{} is not a {} with the relationship ratio of {}".format(
-                            user_name, "potential user" if not reverse_relationship else "massive follower",
-                            float("{0:.2f}".format(relationship_ratio)))
-
-            elif delimit_by_numbers:
-                if followers_count:
-                    if max_followers:
-                        if followers_count > max_followers:
-                            return True, user_name, is_video, \
-                                "User {}'s followers count exceeds maximum limit".format(user_name)
-                    if min_followers:
-                        if followers_count < min_followers:
-                            return True, user_name, is_video, \
-                                "User {}'s followers count is less than minimum limit".format(user_name)
-                if following_count:
-                    if max_following:
-                        if following_count > max_following:
-                            return True, user_name, is_video, \
-                                "User {}'s following count exceeds maximum limit".format(user_name)
-                    if min_following:
-                        if following_count < min_following:
-                            return True, user_name, is_video, \
-                                "User {}'s following count is less than minimum limit".format(user_name)
-                if potency_ratio:
-                    if relationship_ratio and relationship_ratio < potency_ratio:
-                        return True, user_name, is_video, \
-                            "{} is not a {} with the relationship ratio of {}".format(
-                            user_name, "potential user" if not reverse_relationship else "massive follower",
-                            float("{0:.2f}".format(relationship_ratio)))
-
-
-    logger.info('Link: {}'.format(link.encode('utf-8')))
+    logger.info('Link: {}'.format(post_link.encode('utf-8')))
     logger.info('Description: {}'.format(image_text.encode('utf-8')))
 
-    """Check if the user_name is in the ignore_users list"""
-    if (user_name in ignore_users) or (user_name == username):
-        return True, user_name, is_video, 'Username'
-
     if any((word in image_text for word in ignore_if_contains)):
-        return False, user_name, is_video, 'None'
+        return False, user_name, is_video, 'None', "Pass"
 
     dont_like_regex = []
 
@@ -640,9 +541,9 @@ def check_link(browser, link, dont_like, ignore_if_contains, ignore_users, usern
             inapp_unit = 'Inappropriate! ~ contains "{}"'.format(
                 quashed if iffy == quashed else
                 '" in "'.join([str(iffy), str(quashed)]))
-            return True, user_name, is_video, inapp_unit
+            return True, user_name, is_video, inapp_unit, "Undesired word"
 
-    return False, user_name, is_video, 'None'
+    return False, user_name, is_video, 'None', "Success"
 
 
 def like_image(browser, username, blacklist, logger, logfolder):
@@ -693,15 +594,15 @@ def get_tags(browser, url):
     sleep(1)
 
     graphql = browser.execute_script(
-        "return ('graphql' in window._sharedData.entry_data.PostPage)")
+        "return ('graphql' in window._sharedData.entry_data.PostPage[0])")
     if graphql:
         image_text = browser.execute_script(
-            "return window._sharedData.entry_data.PostPage.graphql."
+            "return window._sharedData.entry_data.PostPage[0].graphql."
             "shortcode_media.edge_media_to_caption.edges[0].node.text")
     else:
         image_text = browser.execute_script(
             "return window._sharedData.entry_data."
-            "PostPage.media.caption.text")
+            "PostPage[0].media.caption.text")
 
     tags = findall(r'#\w*', image_text)
     return tags
